@@ -1,0 +1,154 @@
+package helpers
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"net"
+	"strings"
+
+	"github.com/go-playground/validator/v10"
+	geoIp "github.com/oschwald/geoip2-golang"
+	"github.com/phuslu/log"
+)
+
+func GenerateValidationErrorMessage(err error) string {
+	var castedObject validator.ValidationErrors
+	errors.As(err, &castedObject)
+	messageSlice := make([]string, 0)
+
+	/*
+		ensure that error message only shows once,
+		if we do not create the map then the error message will be ex:
+		"failed create role, type is required, type is required"
+		it will shows up for x times the amount of same error encountered
+	*/
+
+	mp := make(map[string]bool)
+
+	// add more validation rules below, ex: case "min": ...
+	for _, err := range castedObject {
+		if _, ok := mp[err.Field()]; ok {
+			continue
+		}
+		switch err.Tag() {
+		case "required":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s is required", err.Field()))
+		case "numeric":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must be a number", err.Field()))
+		case "lt":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must be less than %s", err.Field(), err.Param()))
+		case "gt":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must be greater than %s", err.Field(), err.Param()))
+		case "max":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s length must be less than %s", err.Field(), err.Param()))
+		case "min":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s length must be greater than %s", err.Field(), err.Param()))
+		case "gte":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must ke greater than equal %s", err.Field(), err.Param()))
+		case "lte":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must ke less than equal %s", err.Field(), err.Param()))
+		case "boolean":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must be boolean", err.Field()))
+		case "eq":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must be equal to %s", err.Field(), err.Param()))
+		case "email":
+			messageSlice = append(messageSlice, fmt.Sprintf("'%s' must be an email format", err.Value()))
+		case "eqfield":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must be similar with %s", err.Field(), err.Param()))
+		case "nefield":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s cannot be similar with %s", err.Field(), err.Param()))
+		case "len":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s length must equal to %s", err.Field(), err.Param()))
+		case "alphanum":
+			messageSlice = append(messageSlice, fmt.Sprintf("%s must be alphanumeric", err.Field()))
+		}
+		mp[err.Field()] = true
+	}
+
+	errMessage := strings.Join(messageSlice, ", ")
+
+	return errMessage
+}
+
+func IsValidLatLong(lat, long float64) bool {
+	if lat < -90 || lat > 90 {
+		return false
+	}
+	if long < -180 || long > 180 {
+		return false
+	}
+	return true
+}
+
+// haversine calculates the distance between two points on the Earth
+// given their latitude and longitude in degrees.
+func haversine(lat1, lon1, lat2, lon2 float64) float64 {
+	const earthRadius = 6371.0 // Earth radius in kilometers
+	dLat := degreesToRadians(lat2 - lat1)
+	dLon := degreesToRadians(lon2 - lon1)
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(degreesToRadians(lat1))*math.Cos(degreesToRadians(lat2))*
+			math.Sin(dLon/2)*math.Sin(dLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return earthRadius * c
+}
+
+// degreesToRadians converts degrees to radians
+func degreesToRadians(degrees float64) float64 {
+	return degrees * (math.Pi / 180)
+}
+
+// ip : from request
+// lat, long and radius are set on PLTA data
+// radius must be in kilometer
+func IsIPWithinRadius(ip string, lat, long, radius float64) (bool, error) {
+	// _, b, _, _ := runtime.Caller(0)
+	// basepath := filepath.Dir(b)
+	db, err := geoIp.Open("GeoLite2-City.mmdb")
+	if err != nil {
+		log.Error().Err(errors.New("ERROR GETTING GeoLite2-City.mmdb : " + err.Error())).Msg("")
+		return false, err
+	}
+	defer db.Close()
+
+	parsedIP := net.ParseIP(ip)
+	record, err := db.City(parsedIP)
+	if err != nil {
+		log.Error().Err(errors.New("FAILED TO GET LOCATION DATA : " + err.Error())).Msg("")
+		return false, err
+	}
+
+	distance := haversine(
+		record.Location.Latitude,
+		record.Location.Longitude,
+		lat,
+		long)
+
+	fmt.Printf("LAT LONG FROM IP REQUEST : %f | %f\n", record.Location.Latitude, record.Location.Longitude)
+	fmt.Printf("LAT LONG FROM ROOT : %f | %f\n", lat, long)
+	fmt.Printf("MAX RADIUS : %f\n", radius)
+	fmt.Printf("DISTANCE IN KM : %f\n", distance)
+
+	if distance <= radius {
+		return true, nil
+	} else {
+		return false, nil
+	}
+}
+
+func ValidatePhone(phone string) error {
+	if strings.Index(phone, "0") == 0 {
+		if len(phone) < 10 || len(phone) > 12 {
+			return errors.New("Jika memakai awalan 0, nomor telefon tidak boleh lebih dari 12 dan kurang dari 10 karakter")
+		}
+	} else if strings.Index(phone, "62") == 0 {
+		if len(phone) < 11 || len(phone) > 13 {
+			return errors.New("Jika memakai awalan 62, nomor telefon tidak boleh lebih dari 13 dan kurang dari 11 karakter")
+		}
+	} else {
+		return errors.New("Format nomor telefon harus diawali 62 atau 0")
+	}
+
+	return nil
+}
